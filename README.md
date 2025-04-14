@@ -4,4 +4,4 @@ a solution that leverages an additional trigger node (referred to as TRIGGER) to
 
 Please refer to (Bridge artifact.pdf) for detailed instructions.
 
-Please move the fix.sh and random.sh into the build folder.
+Please first place the Bridge folder to the Desktop, then move the fix.sh and random.sh into the build folder.
