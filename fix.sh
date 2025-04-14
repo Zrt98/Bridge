@@ -1,4 +1,4 @@
-sed -i s/=========/$1/ ~/Desktop/Bridge/src/aoareceiver2.cpp
+sed -i s/=========/$1/ -/src/aoareceiver2.cpp
 make
-sed -i s/$1/=========/ ~/Desktop/Bridge/src/aoareceiver2.cpp
+sed -i s/$1/=========/ -/src/aoareceiver2.cpp
 ./aoatransmitter --txgain 20 --data 05222B9CB3BA1C62$1CDCFC72116D7C008C700C7000000A400100000000026000000,07070618E302844f03000000,07070618E302844a03000000,07070618E302844503000000,072d124d6f61f414430c14e3020806ffff02004e0a020106a3515506f7a03de6b6e483710294728162839165527380000000 --rounds 20000
