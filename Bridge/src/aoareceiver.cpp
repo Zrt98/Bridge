@@ -37,6 +37,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <string.h>
 #include "blegenerator2.hpp"
 
 #define XOR(x,y) ((x && !y) || (!x && y))
@@ -83,6 +84,9 @@ void* keyboard_routine(void* pars)
 {
     while (stop_signal == false) {
         int c = fgetc(stdin);
+        if (c == EOF) {
+            break;
+        }
         if (c == 'p') {          // print 1 pkt info to file
             do_print = 1;
         } else if (c == 'g') {   // adjust gain
@@ -366,20 +370,22 @@ void *process_routine(void *pars)
             mydata.aoa = mydata.aoa / M_PI * 180;
             mydata.sn = sn;
             mydata.amplitude[0] = amplitude;
-            if (isnan(mydata.aoa) == 0) {
+            if (std::isnan(mydata.aoa) == 0) {
                 printf("\rsn: %8lu, aoa: %3.0f, ampl: %8.6f, phasediff %8.6f ",
                     mydata.sn, mydata.aoa, amplitude, phasediff_emulated);
                 fflush(stdout);
                 printf("Begin to save %d time ",do_print);
                 if (do_print > 0) {
-                    fprintf(fptr, "%d %f %f %f %f %f %u\n",
-                        counter,
-                        mydata.aoa,
-                        phasediff,
-                        phasediff_emulated,
-                        amplitude,
-                        gain,
-                        freq_inc/1000000 + 2400);
+                    if (fptr != NULL) {
+                        fprintf(fptr, "%d %f %f %f %f %f %u\n",
+                            counter,
+                            mydata.aoa,
+                            phasediff,
+                            phasediff_emulated,
+                            amplitude,
+                            gain,
+                            freq_inc/1000000 + 2400);
+                    }
                     do_print--;
                     counter++;
                 }
@@ -395,7 +401,9 @@ void *process_routine(void *pars)
         dur2=std::chrono::duration_cast<std::chrono::microseconds>(end0-start0);
     }
     
-    fclose(fptr);
+    if (fptr != NULL) {
+        fclose(fptr);
+    }
 
     free(amplbuf0);
     free(pktphase0);
@@ -526,7 +534,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     pthread_spin_init(&lock[1], PTHREAD_PROCESS_PRIVATE);
     pthread_t proc_thread;
     pthread_t keyboard_thread;
-    struct proc_pars_t proc_pars = {bankA_ptrs, bankB_ptrs, samps_per_buff,channel_idx};
+    struct proc_pars_t proc_pars = {bankA_ptrs, bankB_ptrs, samps_per_buff, static_cast<int>(channel_idx)};
     
     pthread_create(&proc_thread, NULL, process_routine, &proc_pars);
     pthread_create(&keyboard_thread, NULL, keyboard_routine, NULL);
@@ -534,17 +542,17 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     std::signal(SIGINT, &sigint_handler);
     std::cout << "Press Ctrl + C to stop streaming." << std::endl;
 
-    int txsock = 0;
+    int txsock = -1;
     struct sockaddr_in txaddr;
     if ((txsock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) stop_signal = true;
-    memset (&txaddr, '0', sizeof(txaddr));
+    memset (&txaddr, 0, sizeof(txaddr));
     txaddr.sin_family = AF_INET;
     txaddr.sin_port = htons(8082);
 
-    int slavesock = 0;
+    int slavesock = -1;
     struct sockaddr_in slaveaddr;
     if ((slavesock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) stop_signal = true;
-    memset (&slaveaddr, '0', sizeof(slaveaddr));
+    memset (&slaveaddr, 0, sizeof(slaveaddr));
     slaveaddr.sin_family = AF_INET;
     slaveaddr.sin_port = htons(8081);
 
@@ -564,6 +572,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         if (md.error_code == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
         }
         else if (md.error_code != uhd::rx_metadata_t::ERROR_CODE_NONE) {
+            pthread_spin_unlock(&lock[select_bank]);
             std::cout << boost::format("\nReceived %u samples.\n") % num_acc_samps;
             throw std::runtime_error(md.strerror());
         }
@@ -601,181 +610,14 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
         }
     }
 
-    pthread_join(proc_thread, NULL);
-    pthread_cancel(keyboard_thread);
-
-    pthread_spin_destroy(&lock[0]);
-    pthread_spin_destroy(&lock[1]);
-    std::cout << boost::format("\nReceived %u samples.\n") % num_acc_samps;
-    std::cout << "Done." << std::endl;
-
-    return EXIT_SUCCESS;
-}
-
-int REC_BLE_ADV()
-{
-    uhd::set_thread_priority_safe();
-    std::string args, channel_list, subdev;
-    double rate;
-    size_t total_num_samps;
-    size_t channel_idx;
-
-    std::cout << "Creating USRP device..." << std::endl;
-    uhd::usrp::multi_usrp::sptr usrp = uhd::usrp::multi_usrp::make(args);
-    std::cout << std::endl;
-
-    subdev="A:0 A:0";
-    usrp->set_rx_subdev_spec(subdev);
-
-    std::cout << boost::format("Setting RX rate to %f MS/s\n")
-                % (rate/1e6);
-    usrp->set_rx_rate(rate);
-    std::cout << boost::format("Actual RX rate: %f MS/s.\n\n")
-                % (usrp->get_rx_rate()/1e6);
-
-    usrp->set_clock_source("internal");
-    usrp->set_time_now(uhd::time_spec_t(0.0));
-    std::cout << "Device timestamp set to 0.0 s." << std::endl;
-
-    usrp->set_rx_freq(freq, 0);
-    std::cout << boost::format("Center frequency set to %f MHz.\n")
-                % (usrp->get_rx_freq()/1e6);
-    usrp->set_rx_gain(gain, 0);
-    std::cout << boost::format("Gain set to %.1f dB.\n\n")
-                 % (usrp->get_rx_gain());
-
-    usrp->set_rx_antenna("RX2", 0);
-    std::vector<std::string> channel_strings;
-    std::vector<size_t> channel_nums;
-    boost::split(channel_strings, channel_list, boost::is_any_of("\"',"));
-    for (size_t c = 0; c < channel_strings.size(); c++) {
-        size_t chan = boost::lexical_cast<int>(channel_strings[c]);
-        if (chan < usrp->get_rx_num_channels()) {
-            channel_nums.push_back(boost::lexical_cast<int>(channel_strings[c]));
-        } else {
-            throw std::runtime_error("Invalid channel(s) specified.");
-        }
-    }
-
-    uhd::stream_args_t stream_args("fc32", "sc16");
-    stream_args.channels = channel_nums;
-    uhd::rx_streamer::sptr rx_stream = usrp->get_rx_stream(stream_args);
-
-    std::cout << "Begin streaming samples... ";
-    uhd::stream_cmd_t stream_cmd(uhd::stream_cmd_t::STREAM_MODE_START_CONTINUOUS);
-    stream_cmd.num_samps = total_num_samps;
-    stream_cmd.stream_now = false;
-    stream_cmd.time_spec = uhd::time_spec_t(2.0);
-    rx_stream->issue_stream_cmd(stream_cmd);
-
-    const size_t samps_per_buff = rx_stream->get_max_num_samps();
-    std::vector<std::vector<std::complex<float>>> bankA_buffs(
-        usrp->get_rx_num_channels(),
-        std::vector<std::complex<float>> (samps_per_buff)
-    );
-    std::vector<std::vector<std::complex<float>>> bankB_buffs(
-        usrp->get_rx_num_channels(),
-        std::vector<std::complex<float>> (samps_per_buff)
-    );
-
-    std::vector<std::complex<float> *> bankA_ptrs;
-    std::vector<std::complex<float> *> bankB_ptrs;
-    for (size_t i = 0; i < bankA_buffs.size(); i++) {
-        bankA_ptrs.push_back(&bankA_buffs[i].front());
-        bankB_ptrs.push_back(&bankB_buffs[i].front());
-    }
-    
-    uhd::rx_metadata_t md;
-    double timeout = 10.0;
-    size_t num_acc_samps = 0;
-
-    size_t kk = 0;
-    size_t select_bank;
-    size_t num_rx_samps;
-    std::vector<std::complex<float> *> curr_bank;
-
-    pthread_spin_init(&lock[0], PTHREAD_PROCESS_PRIVATE);
-    pthread_spin_init(&lock[1], PTHREAD_PROCESS_PRIVATE);
-
-    pthread_t proc_thread;
-    pthread_t keyboard_thread;
-    struct proc_pars_t proc_pars = {bankA_ptrs, bankB_ptrs, samps_per_buff,channel_idx};
-    
-    pthread_create(&proc_thread, NULL, process_routine, &proc_pars);
-    pthread_create(&keyboard_thread, NULL, keyboard_routine, NULL);
-
-    std::signal(SIGINT, &sigint_handler);
-    std::cout << "Press Ctrl + C to stop streaming." << std::endl;
-    int txsock = 0;
-    struct sockaddr_in txaddr;
-    if ((txsock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) stop_signal = true;
-    memset (&txaddr, '0', sizeof(txaddr));
-    txaddr.sin_family = AF_INET;
-    txaddr.sin_port = htons(8082);
-
-    int slavesock = 0;
-    struct sockaddr_in slaveaddr;
-    if ((slavesock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) stop_signal = true;
-    memset (&slaveaddr, '0', sizeof(slaveaddr));
-    slaveaddr.sin_family = AF_INET;
-    slaveaddr.sin_port = htons(8081);
-
-    if (inet_pton(AF_INET, "192.168.0.3", &txaddr.sin_addr) <= 0) stop_signal = true;
-    if (inet_pton(AF_INET, "192.168.0.2", &slaveaddr.sin_addr) <= 0) stop_signal = true;
-
-    while (stop_signal == false) {
-        select_bank = kk++ % 2;
-
-        if (select_bank == 0) curr_bank = bankA_ptrs;
-        else curr_bank = bankB_ptrs;
-        pthread_spin_lock(&lock[select_bank]);
-
-        num_rx_samps = rx_stream->recv(
-            curr_bank, samps_per_buff, md, timeout, false
-        );
-
-        if (md.error_code == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
-        }
-        else if (md.error_code != uhd::rx_metadata_t::ERROR_CODE_NONE) {
-            std::cout << boost::format("\nReceived %u samples.\n") % num_acc_samps;
-            throw std::runtime_error(md.strerror());
-        }
-
-        num_acc_samps += num_rx_samps;
-        
-        if (select_bank == 0) bankA_nsamps = num_rx_samps;
-        else bankB_nsamps = num_rx_samps;
-        pthread_spin_unlock(&lock[select_bank]);
-
-        if (change_gain) {
-            gain = fmodf(gain+10,60);
-            usrp->set_rx_gain(gain, 0);
-            usrp->set_rx_gain(gain, 1);
-            std::cout << boost::format("Gain set to %.1f dB.\n") % (usrp->get_rx_gain());
-            change_gain = false;
-
-            cmd_t command = {1, (int) gain};
-            sendto(slavesock, &command, sizeof(command), 0, (struct sockaddr *)&slaveaddr, sizeof(slaveaddr));
-        }
-
-        if (do_hop) {
-            freq = (float) ((freq_inc) % 80000000) + 2402e6;
-            freq_inc += 2000000;
-            usrp->set_rx_freq(freq, 0);
-            usrp->set_rx_freq(freq, 1);
-            std::cout << boost::format("Frequency set to %f MHz.\n") % (usrp->get_rx_freq()/1e6);
-            do_hop = false;
-
-            int freq_integer = 2400 + freq_inc/1000000;
-
-            cmd_t command = {2, freq_integer};
-            sendto(txsock, &freq_integer, sizeof(freq_integer), 0, (struct sockaddr*)&txaddr, sizeof(txaddr)); 
-            sendto(slavesock, &command, sizeof(command), 0, (struct sockaddr *)&slaveaddr, sizeof(slaveaddr));
-        }
-    }
+    rx_stream->issue_stream_cmd(uhd::stream_cmd_t::STREAM_MODE_STOP_CONTINUOUS);
 
     pthread_join(proc_thread, NULL);
     pthread_cancel(keyboard_thread);
+    pthread_join(keyboard_thread, NULL);
+
+    if (txsock >= 0) close(txsock);
+    if (slavesock >= 0) close(slavesock);
 
     pthread_spin_destroy(&lock[0]);
     pthread_spin_destroy(&lock[1]);

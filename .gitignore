@@ -1,0 +1,28 @@
+# Build directories and CMake outputs
+build/
+Bridge/build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+
+# Compiled executables
+Bridge/aoatransmitter
+Bridge/aoareceiver
+
+# Runtime outputs and data captures
+angles.dat
+*.dat
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.vscode/
+.idea/

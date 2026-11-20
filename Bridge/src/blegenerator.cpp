@@ -84,7 +84,7 @@ BLESDR::BLESDR() :
 }
 
 BLESDR::~BLESDR() {
-	delete gauss_coef;
+	delete[] gauss_coef;
 }
 
 size_t BLESDR::byte_to_bits(uint8_t* byte, size_t len, char* bits) {
@@ -153,41 +153,37 @@ void BLESDR::btle_whiten(uint8_t chan, uint8_t* buf, uint8_t len)
 
 std::vector<float> BLESDR::sample_for_raw_packet(size_t chan, int counter,uint8_t new_packet[],int len_packet,int flag)
 {
-	uint8_t packet[len_packet];
-	for(int i=0;i<len_packet;++i){
-		packet[i]=new_packet[i];
-	}
+	std::vector<uint8_t> packet(new_packet, new_packet + len_packet);
 	uint8_t preamble = 0xAA;
 	uint32_t access_address =  0x8E89BED6;//1
 	if(flag==1){
 		access_address=0x21C7CFCD; 
 	}
 
-	btle_calc_crc(packet, sizeof(packet) - 3, packet + sizeof(packet) - 3,flag);
+	btle_calc_crc(packet.data(), packet.size() - 3, packet.data() + packet.size() - 3,flag);
 
-	btle_whiten(chan, packet, sizeof(packet));
+	btle_whiten(chan, packet.data(), packet.size());
 
-	size_t numbits = (sizeof(packet) + 5) * 8;
+	size_t numbits = (packet.size() + 5) * 8;
 	int offset = 0;
-	char *bits = new char[numbits];
+	std::vector<char> bits(numbits, 0);
 	iqsamples.resize((numbits * SAMPLE_PER_SYMBOL + (LEN_GAUSS_FILTER * SAMPLE_PER_SYMBOL)) * 2);
-	offset = byte_to_bits(&preamble, 1, bits);
-	offset += byte_to_bits((uint8_t*) &access_address, 4, bits + offset);
-	offset += byte_to_bits(packet, sizeof(packet), bits + offset);
+	offset = byte_to_bits(&preamble, 1, bits.data());
+	offset += byte_to_bits((uint8_t*) &access_address, 4, bits.data() + offset);
+	offset += byte_to_bits(packet.data(), packet.size(), bits.data() + offset);
 
 	if(flag==4){
-		    int  cte_tail_len=0;
-			uint8_t cte_tail[cte_tail_len];
-			for(int i=0;i<cte_tail_len;++i){
-				cte_tail[i]=0xFF;
-			}
-			offset += byte_to_bits(cte_tail, cte_tail_len, bits + offset);
-			numbits=numbits+8*cte_tail_len;
+		int cte_tail_len=0;
+		if(cte_tail_len > 0){
+			std::vector<uint8_t> cte_tail(cte_tail_len, 0xFF);
+			bits.resize(numbits + 8 * cte_tail_len, 0);
+			offset += byte_to_bits(cte_tail.data(), cte_tail_len, bits.data() + offset);
+			numbits = numbits + 8 * cte_tail_len;
 			iqsamples.resize((numbits * SAMPLE_PER_SYMBOL + (LEN_GAUSS_FILTER * SAMPLE_PER_SYMBOL)) * 2);
+		}
 	}
 
-	int num_phy_sample = gen_sample_from_phy_bit(bits, iqsamples.data(), numbits);
-	delete bits;
+	int num_phy_sample = gen_sample_from_phy_bit(bits.data(), iqsamples.data(), numbits);
 	return iqsamples;
 }
 

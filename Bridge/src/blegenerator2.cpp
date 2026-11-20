@@ -34,6 +34,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
+#include <algorithm>
+#include <vector>
 
 #include "blegenerator.hpp"
 
@@ -51,10 +53,9 @@ struct txthreadpars {
 };
 
 int global_frequency = 0;
-uint8_t* data2Char(std::string rawdata){
-    int str_len=rawdata.length();
-    uint8_t data[str_len];
-    for(int i=0;i<str_len;++i){
+std::vector<uint8_t> data2Char(const std::string &rawdata){
+    std::vector<uint8_t> data(rawdata.size());
+    for(size_t i=0;i<rawdata.size();++i){
         data[i]=(uint8_t)rawdata[i];
     }
     return data;
@@ -68,16 +69,13 @@ void *tx_thread_routine(void *pars)
     size_t samps_per_buff = txpar->samps_per_buff;
     int channel = txpar->channel;
     int rounds=txpar->rounds;
-    int length=txpar->data.length();
-    char data[length];
-    for(int i=0;i<length;i++){
-        data[i]=txpar->data[i];
+    size_t byte_len = txpar->data.length() / 2;
+    std::vector<uint8_t> data_uint8(byte_len, 0);
+    const char *hex_str = txpar->data.c_str();
+    for (size_t i = 0; i < byte_len; i++){
+        sscanf(hex_str + (i * 2), "%2hhx", &data_uint8[i]);
     }
-    uint8_t data_uint8[64];
-    for (int i = 0;i<sizeof(data)/2;i++){
-        sscanf(data+(i*2),"%2hhx",data_uint8+i);
-    }
-    for (int i = 0; i < sizeof(data)/2; i++) {
+    for (size_t i = 0; i < byte_len; i++) {
         printf("0x%02X ", data_uint8[i]);
     }
     uhd::stream_args_t stream_args(cpu_format, cpu_format);
@@ -94,8 +92,8 @@ void *tx_thread_routine(void *pars)
     int old_global_frequency = global_frequency;
     int flag=0;
     do {
-        int len_packet=sizeof(data_uint8);
-        std::vector<int8_t> buff = generatesamples(channel, counter, ZERO_PAD_BYTES, data_uint8,len_packet,flag);
+        int len_packet = static_cast<int>(data_uint8.size());
+        std::vector<int8_t> buff = generatesamples(channel, counter, ZERO_PAD_BYTES, data_uint8.data(), len_packet, flag);
         size_t num_tx_samps = buff.size() / 2;
         md.end_of_burst = true;
         int ssent = (int) tx_stream->send(&buff.front(), num_tx_samps, md);

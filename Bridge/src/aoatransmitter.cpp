@@ -37,14 +37,17 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
+#include <cerrno>
+#include <sys/time.h>
+#include <algorithm>
 #include <vector>
 #include <mutex>
 #include "aoareceiver2.hpp"
 #include "blegenerator.hpp"
 
 namespace po = boost::program_options;
-static bool stop_signal_called = false;
-void sig_int_handler(int){stop_signal_called = true;}
+volatile sig_atomic_t bridge_stop_signal = 0;
+void sig_int_handler(int){bridge_stop_signal = 1;}
 extern int globalVariable; 
 extern std::chrono::high_resolution_clock::time_point startglobal;
 extern std::chrono::high_resolution_clock::time_point endglobal;
@@ -92,6 +95,11 @@ void *tx_thread_routine(void *pars)
     int channel = txpar->channel;
     int rounds=txpar->rounds;
     std::vector<std::string> data_str_list;
+    if (txpar->data.empty()) {
+        std::cerr << "Error: --data must not be empty." << std::endl;
+        bridge_stop_signal = 1;
+        return NULL;
+    }
     boost::split(data_str_list,txpar->data,boost::is_any_of(","));
     int number_of_str=data_str_list.size();
 
@@ -106,21 +114,19 @@ void *tx_thread_routine(void *pars)
 #define ZERO_PAD_BYTES 100
     std::cout << "tx start" << std::endl;
     double old_freq=0;
-    std::vector<uint8_t*> data_uint_list;
+    std::vector<std::vector<uint8_t>> data_uint_list;
     std::vector<int> length_list;
 
     for(int i=0;i<number_of_str;i++){
         int length=data_str_list[i].length();
-        length_list.push_back(length/2);
-        char data[length];
-        for(int j=0;j<length;j++){
-            data[j]=data_str_list[i][j];
+        int byte_len=length/2;
+        length_list.push_back(byte_len);
+        std::vector<uint8_t> data_uint8(byte_len, 0);
+        const char *hex_str = data_str_list[i].c_str();
+        for (int j = 0;j<byte_len;j++){
+            sscanf(hex_str+(j*2),"%2hhx",&data_uint8[j]);
         }
-        uint8_t *data_uint8=new uint8_t[length/2];
-        for (int j = 0;j<length/2;j++){
-            sscanf(data+(j*2),"%2hhx",data_uint8+j);
-        }
-        data_uint_list.push_back(data_uint8);
+        data_uint_list.push_back(std::move(data_uint8));
 
     }
     int flag=0;
@@ -129,14 +135,14 @@ void *tx_thread_routine(void *pars)
     std::vector<std::vector<int8_t>> buffAll;
     int final_flag=0;
     long int timedelay = 255000;
-    long int packet1delay;
+    long int packet1delay = 0;
 
     std::vector<int> channel_list = {37,37,38,39,4};
 
     for(int i=0;i<number_of_str;i++){
             flag=0;
 
-            channel = channel_list[i];
+            channel = channel_list[i % channel_list.size()];
 
             int len_packet=length_list[i];
 
@@ -144,7 +150,7 @@ void *tx_thread_routine(void *pars)
                 if(flag_generate_sample == number_of_str -1){
                         flag=4;
                 }
-                buffAll.push_back(generatesamples(channel, counter, ZERO_PAD_BYTES, data_uint_list[i],len_packet,flag));
+                buffAll.push_back(generatesamples(channel, counter, ZERO_PAD_BYTES, data_uint_list[i].data(),len_packet,flag));
                 flag_generate_sample += 1;
 
                 if(flag_generate_sample == number_of_str){
@@ -303,8 +309,12 @@ void *tx_thread_routine(void *pars)
 
                 mtx.lock();
                 globalVariable=1;
-                mtx.unlock(); 
-    } while(rounds>0&&not stop_signal_called);
+                mtx.unlock();
+
+                rounds--;
+    } while(rounds>0 && !bridge_stop_signal);
+
+    bridge_stop_signal = 1;
 
     //finished
     std::cout << std::endl << "tx stream done!" << std::endl << std::endl;
@@ -427,8 +437,12 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     txpar.data=data;
     txpar.rounds=rounds;
     txpar.initaddr =initaddr;
+
+    struct rxthreadpars rxpar;
+    rxpar.initaddr = initaddr;
+    rxpar.args = args;
     
-    pthread_create(&txthread2, NULL, REC_BLE_ADV, NULL);
+    pthread_create(&txthread2, NULL, REC_BLE_ADV, (void *) &rxpar);
     // while(true){
     //     printf("%d",globalVariable);
     //     if(globalVariable==0){
@@ -442,10 +456,19 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     int soc = socket(PF_INET, SOCK_DGRAM, 0);
     if( soc == -1 ) {
         fprintf(stderr, "Cannot create socket\n");
+        bridge_stop_signal = 1;
+        pthread_join(txthread, NULL);
+        pthread_join(txthread2, NULL);
         return -1;
     }
 
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    setsockopt(soc, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     struct sockaddr_in local, remote;
+    memset(&local, 0, sizeof(local));
     local.sin_family = PF_INET;
     local.sin_port = htons ((short) 8082);
     local.sin_addr.s_addr = htonl (INADDR_ANY);
@@ -453,26 +476,36 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     if (bind (soc, (struct sockaddr*)&local, sizeof(local)) == -1) {
         fprintf (stderr, "Cannot bind socket\n");
         close (soc);
+        bridge_stop_signal = 1;
+        pthread_join(txthread, NULL);
+        pthread_join(txthread2, NULL);
         return 1;
     }
 
 #define BUFFER_LENGTH 1000
     char buffer[BUFFER_LENGTH];
 
-    socklen_t size_remote = sizeof(remote);
-    while (not stop_signal_called) {
+    while (!bridge_stop_signal) {
+        socklen_t size_remote = sizeof(remote);
         int retc = recvfrom(soc, buffer, BUFFER_LENGTH, 0, (struct sockaddr*) &remote, &size_remote);
-	if (retc == -1) {
+        if (retc == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                continue;
+            }
             fprintf(stderr, "Error receiving from socket\n");
-            close (soc);
-            return 1;
+            bridge_stop_signal = 1;
+            break;
         }
-        int *frequency = (int *) buffer;
-        printf("new frequency = %d\n", *frequency);
-        global_frequency = *frequency;
+        if (retc >= (int)sizeof(int)) {
+            int *frequency = (int *) buffer;
+            printf("new frequency = %d\n", *frequency);
+            global_frequency = *frequency;
+        }
     }
 
+    close(soc);
     pthread_join (txthread, NULL);
+    pthread_join (txthread2, NULL);
 
     return EXIT_SUCCESS;
 }

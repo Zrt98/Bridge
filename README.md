@@ -30,6 +30,8 @@ This repository contains the main software implementation for controlling the **
 ├── random.sh                       # Wrapper script for targets with a randomized MAC address
 ├── Bridge artifact.pdf             # Detailed artifact appendix and evaluation checklist
 ├── example IQ samples.zip          # Example IQ sample dataset (.mat files from 4 locators)
+├── LICENSE                         # GNU General Public License v3.0 (GPL-3.0)
+├── .gitignore
 └── README.md
 ```
 
@@ -76,30 +78,21 @@ uhd_find_devices
 
 ### Step 2: Build the BRIDGE Software
 
-> **Important:** The helper scripts [`fix.sh`](./fix.sh) and [`random.sh`](./random.sh) currently reference the source path `~/Desktop/Bridge/src/aoareceiver2.cpp` and expect to be executed from inside the `build/` directory.
-
-1. Clone this repository and place the inner `Bridge` folder on your Desktop (`~/Desktop/Bridge`):
+1. Clone this repository:
 
    ```bash
-   git clone https://github.com/Zrt98/Bridge.git bridge-repo
-   cp -r bridge-repo/Bridge ~/Desktop/Bridge
+   git clone https://github.com/Zrt98/Bridge.git
+   cd Bridge
    ```
 
-2. Build the executables (`aoatransmitter` and `aoareceiver`):
+2. Build the executables (`aoatransmitter` and `aoareceiver`) using CMake:
 
    ```bash
-   cd ~/Desktop/Bridge
+   cd Bridge
    mkdir -p build
    cd build
    cmake ..
    make
-   ```
-
-3. Copy the helper scripts into the `build` directory and make them executable:
-
-   ```bash
-   cp /path/to/bridge-repo/fix.sh /path/to/bridge-repo/random.sh ~/Desktop/Bridge/build/
-   chmod +x ~/Desktop/Bridge/build/fix.sh ~/Desktop/Bridge/build/random.sh
    ```
 
 ### Step 3: Deploy and Configure the AoA Locators
@@ -130,32 +123,30 @@ Ensure that:
 
 ### 2. Run BRIDGE
 
-From inside `~/Desktop/Bridge/build`:
+From the repository root (the scripts automatically locate `Bridge/build/aoatransmitter`, or `./aoatransmitter` if invoked from inside `build/`):
 
 - **For a target with a fixed (public) MAC address:**
 
   ```bash
-  cd ~/Desktop/Bridge/build
   ./fix.sh FFEEDDCCBBAA
   ```
 
 - **For a target with a randomized MAC address:**
 
   ```bash
-  cd ~/Desktop/Bridge/build
   ./random.sh FFEEDDCCBBAA
   ```
 
   > For long-running data collection with randomized-address targets, monitor for address rotation every **10–15 minutes**, stop the process (`Ctrl+C`), and re-run `./random.sh` with the updated reversed MAC address.
 
+You can also append extra `aoatransmitter` flags after the MAC address (for example, `./fix.sh FFEEDDCCBBAA --args "addr=192.168.10.2"`).
+
 #### What the Scripts Do
 
-Both scripts temporarily substitute the target address placeholder (`=========`) in `~/Desktop/Bridge/src/aoareceiver2.cpp`, rebuild `aoatransmitter`, restore the placeholder, and run:
+Both scripts validate the 12-hex-character MAC address argument, locate the compiled `aoatransmitter` binary, and pass `--initaddr <MAC>` directly at runtime (no source patching or recompilation required):
 
-- `fix.sh`: launches `aoatransmitter` with `--txgain 20`, `--rounds 20000`, and a fixed-address (`0522...`) packet payload sequence.
-- `random.sh`: launches `aoatransmitter` with `--txgain 20`, `--rounds 20000`, and a randomized-address (`C522...`) packet payload sequence.
-
-> **Tip:** If you interrupt `fix.sh` or `random.sh` while `make` is running, verify that `init_address` in `~/Desktop/Bridge/src/aoareceiver2.cpp` has been restored to `"========="`.
+- `fix.sh`: launches `aoatransmitter` with `--txgain 20`, `--rounds 20000`, `--initaddr <MAC>`, and a fixed-address (`0522...`) packet payload sequence.
+- `random.sh`: launches `aoatransmitter` with `--txgain 20`, `--rounds 20000`, `--initaddr <MAC>`, and a randomized-address (`C522...`) packet payload sequence.
 
 ### 3. Monitor Output & Expected Results
 
@@ -175,7 +166,7 @@ If you want to invoke `aoatransmitter` directly without the wrapper scripts, the
 | `--data` | `""` | Comma-separated hex strings for the 5-packet TX sequence |
 | `--rounds` | `10` | Number of transmission rounds |
 | `--txgain` | `50` | TX RF gain in dB (`fix.sh` / `random.sh` use `20`) |
-| `--initaddr` | `6f61f414430c` | Initiator address parameter |
+| `--initaddr` | `6f61f414430c` | Target BLE advertising address to trigger on (reversed byte order) |
 
 ---
 
@@ -198,4 +189,4 @@ For the full ACM Artifact Appendix — including the meta-information checklist,
 
 ## Acknowledgments & License
 
-Components of the UHD/USRP BLE SDR implementation and build configuration are adapted from open-source GPLv3 software by **Ettus Research LLC**, **Francesco Gringoli**, **Marco Cominelli**, **Jiang Wei**, **Xianjun Jiao**, and **Florian Echtler**. Source files are licensed under the **GNU General Public License v3.0 (GPL-3.0)**; see the file headers in `Bridge/src/` and `Bridge/CMakeLists.txt` for details.
+Components of the UHD/USRP BLE SDR implementation and build configuration are adapted from open-source GPLv3 software by **Ettus Research LLC**, **Francesco Gringoli**, **Marco Cominelli**, **Jiang Wei**, **Xianjun Jiao**, and **Florian Echtler**. This repository is licensed under the **GNU General Public License v3.0 (GPL-3.0)** — see [`LICENSE`](./LICENSE) for details.
